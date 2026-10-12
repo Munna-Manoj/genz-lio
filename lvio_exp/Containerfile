@@ -1,0 +1,10 @@
+# LVIO_exp: GenZ-LIO built from this checkout (branch lvio-exp), headless, for the harness's podman runs.
+# podman build -f lvio_exp/Containerfile -t lvx/genz-lio:py310 .
+FROM docker.io/library/ros:humble-perception
+RUN apt-get update && apt-get install -y --no-install-recommends python3-pip libyaml-cpp-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY . /src
+RUN python3 -m pip install --no-cache-dir --upgrade pip \
+    && CMAKE_BUILD_PARALLEL_LEVEL=8 python3 -m pip install --no-cache-dir /src \
+    && python3 -c "import genz_lio; print(genz_lio.__version__)"
+WORKDIR /src

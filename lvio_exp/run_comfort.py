@@ -1,10 +1,11 @@
 #!/usr/bin/env python3
 """Run GenZ-LIO headless on a COMFORT/GrandTour `comfort_offline` folder (LVIO_exp harness, branch lvio-exp).
 
-python lvio_exp/run_comfort.py <comfort_offline> <config.yaml> <out_dir> [--name MISSION]
+python lvio_exp/run_comfort.py <comfort_offline> <config.yaml> <out_dir> [--name MISSION] [--imu-dt S]
 
 Reads the Hesai XT32 scans (lidar/<scan start ns>.bin) and imu.txt directly; no bag conversion. Scans and IMU
-samples are paired by upstream's own _ScanBuffer, exactly as the rosbag reader does. Writes, in <out_dir>:
+samples are paired by upstream's own _ScanBuffer, exactly as the rosbag reader does. IMU time gets +imu_dt, the
+per-mission offset LVIO_exp applies to every system (configs/missions.yaml). Writes, in <out_dir>:
   <name>_imu.tum   the IMU-frame pose per scan (result.pose), TUM: t x y z qx qy qz qw
   timing.csv       stamp, ms, rss_mb, leaf_m, inliers: the columns LVIO_exp reads for every system
   summary.json     frames, skipped, empty clouds, wall time
@@ -34,10 +35,11 @@ def rss_mb() -> float:
         return int(f.read().split()[1]) * PAGE_MB
 
 
-def events(offline: Path):
+def events(offline: Path, imu_dt: float = 0.0):
     """IMU samples and scans of the folder, in time order: ('imu', row) or ('scan', stamp_s, path)."""
     raw = np.loadtxt(offline / "imu.txt")                    # t_ns gx gy gz ax ay az
-    imu = np.column_stack([raw[:, 0] * 1e-9, raw[:, 4:7], raw[:, 1:4]])   # -> t ax ay az gx gy gz (genz order)
+    t_imu = (raw[:, 0].astype(np.int64) + round(imu_dt * 1e9)) * 1e-9   # the shift the bag converter applies
+    imu = np.column_stack([t_imu, raw[:, 4:7], raw[:, 1:4]])   # -> t ax ay az gx gy gz (genz order)
     scans = sorted((int(p.stem) * 1e-9, p) for p in (offline / "lidar").glob("*.bin"))
     out = [(t, 0, ("imu", row)) for t, row in zip(imu[:, 0], imu)]
     out += [(t, 1, ("scan", t, p)) for t, p in scans]
@@ -64,6 +66,7 @@ def main() -> None:
     ap.add_argument("config", type=Path)
     ap.add_argument("out", type=Path)
     ap.add_argument("--name", default=None, help="file prefix, default: the mission folder name")
+    ap.add_argument("--imu-dt", type=float, default=0.0, help="IMU time offset (s), added to every IMU stamp")
     a = ap.parse_args()
     a.out.mkdir(parents=True, exist_ok=True)
     name = a.name or a.offline.parent.name
@@ -92,7 +95,7 @@ def main() -> None:
             timing.append((r.timestamp, r.processing_time_ms, rss_mb(), r.leaf_size,
                            r.plane_matches + r.point_matches))
 
-    for e in events(a.offline):
+    for e in events(a.offline, a.imu_dt):
         if e[0] == "imu":
             event = buffer.push_imu(e[1][None, :])
         else:
@@ -116,7 +119,7 @@ def main() -> None:
         f.write("stamp,ms,rss_mb,leaf_m,inliers\n")
         for row in timing:
             f.write("{:.9f},{:.3f},{:.0f},{:.3f},{}\n".format(*row))
-    summary = {"frames": len(poses), "skipped": skipped, "empty_clouds": empty,
+    summary = {"imu_dt": a.imu_dt, "frames": len(poses), "skipped": skipped, "empty_clouds": empty,
                "pending_scans": int(buffer.pending_scans), "wall_s": round(time.perf_counter() - started, 1)}
     (a.out / "summary.json").write_text(json.dumps(summary, indent=2))
     print(json.dumps(summary))
